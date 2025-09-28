@@ -7,5 +7,9 @@
     "author": {
         "name": "Movesia",
         "email": "support@movesia.com"
+    },
+    "dependencies": {
+        "com.endel.nativewebsocket": "https://github.com/endel/NativeWebSocket.git#upm",
+        "com.paps.unity-toolbar-extender-ui-toolkit": "https://github.com/Sammmte/unity-toolbar-extender-ui-toolkit.git?path=/Assets/Package"
     }
 }
