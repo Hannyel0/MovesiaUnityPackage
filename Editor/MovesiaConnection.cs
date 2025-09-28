@@ -74,7 +74,7 @@ public static class MovesiaConnection
     }
 
     private static void OnBeforeAssemblyReload() => _ = CloseSocket("domain-reload");
-    private static void OnEditorQuitting()       => _ = CloseSocket("editor-quitting");
+    private static void OnEditorQuitting() => _ = CloseSocket("editor-quitting");
 
     private static void CreateWebSocket()
     {
@@ -157,35 +157,12 @@ public static class MovesiaConnection
         {
             Debug.Log("🚀 Starting connection ready workflow...");
 
-            // Step 1: Send manifest if not already sent
-            if (!manifestSent)
-            {
-                Debug.Log("📦 Sending manifest...");
-                
-                try
-                {
-                    SendManifestSync();
-                    manifestSent = true;
-                    Debug.Log("✅ Manifest sent successfully");
-                }
-                catch (Exception manifestEx)
-                {
-                    Debug.LogError($"❌ Manifest sending failed: {manifestEx.Message}");
-                    Debug.LogError($"❌ Manifest stack trace: {manifestEx.StackTrace}");
-                    return; // Don't continue if manifest fails
-                }
-            }
-            else
-            {
-                Debug.Log("📦 Manifest already sent, skipping");
-            }
-
             // Step 2: Mark connection as ready
-            Debug.Log("🔓 Marking connection as ready");
+            Debug.Log("📌 Marking connection as ready");
             isConnectionReady = true;
             
             // Step 3: Notify HierarchyTracker and other listeners
-            Debug.Log("🔔 Notifying connection ready listeners...");
+            Debug.Log("📌 Notifying connection ready listeners...");
             try
             {
                 OnConnectionReady?.Invoke();
@@ -196,7 +173,7 @@ public static class MovesiaConnection
                 Debug.LogError($"❌ Failed to notify listeners: {eventEx.Message}");
             }
             
-            Debug.Log("🎉 Connection fully ready, hierarchy should be sent by HierarchyTracker");
+            Debug.Log("🎉 Connection fully ready, waiting for manifest request from Electron");
         }
         catch (Exception ex)
         {
@@ -388,7 +365,12 @@ public static class MovesiaConnection
 
             if (type == "request_manifest" || type == "manifest:request" || type == "resync")
             {
-                // fire and forget
+                Debug.Log("📨 Received manifest request from Electron");
+                
+                // ✅ FIX: Reset manifestSent flag to allow sending manifest again
+                manifestSent = false;
+                
+                // Send manifest synchronously
                 SendManifestSync();
                 return;
             }

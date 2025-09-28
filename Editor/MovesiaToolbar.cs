@@ -26,7 +26,7 @@ public sealed class MovesiaEditorState : ScriptableSingleton<MovesiaEditorState>
 [MainToolbarElement(id: "Movesia/Status", ToolbarAlign.Left, order: 2)]
 public sealed class MovesiaToolbarStatus : VisualElement
 {
-    const string BaseIconPath      = "Assets/Editor/Movesia/Editor/EditorResources/";
+    const string BaseIconPath      = "Assets/Scripts/Movesia/Editor/EditorResources/icons/";
     const string IconConnected     = "movesia-connected-dark.png";
     const string IconConnecting    = "movesia-connecting-dark.png";
     const string IconDisconnected  = "movesia-disconnected-dark.png";
