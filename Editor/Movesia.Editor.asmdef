@@ -1,0 +1,19 @@
+{
+    "name": "Movesia.Editor",
+    "rootNamespace": "",
+    "references": [
+        "GUID:8d62da4aabd2a19419c7378d23ea5849",
+        "GUID:04376767bc1f3b428aefa3d20743e819"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
