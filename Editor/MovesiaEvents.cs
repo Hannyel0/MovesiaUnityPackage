@@ -228,4 +228,155 @@ public static class MovesiaEvents
     }
 }
 
+[InitializeOnLoad]
+public static class MovesiaSelectionTracker
+{
+    private static string lastSelectedPath = null;
+    private static string lastSelectedGuid = null;
+
+    static MovesiaSelectionTracker()
+    {
+        Debug.Log("🎯 [SelectionTracker] Initializing...");
+        
+        // Subscribe to selection changes
+        Selection.selectionChanged -= OnSelectionChanged;
+        Selection.selectionChanged += OnSelectionChanged;
+        
+        Debug.Log("✅ [SelectionTracker] Initialized successfully");
+    }
+
+    private static void OnSelectionChanged()
+    {
+        try
+        {
+            if (!MovesiaConnection.IsConnected)
+            {
+                return; // Don't process if not connected
+            }
+
+            // Get the currently selected object
+            var selectedObject = Selection.activeObject;
+            
+            if (selectedObject == null)
+            {
+                // Nothing selected - send null selection
+                if (lastSelectedPath != null) // Only send if we had something selected before
+                {
+                    SendSelectionUpdate(null, null, null, null);
+                    lastSelectedPath = null;
+                    lastSelectedGuid = null;
+                }
+                return;
+            }
+
+            // Get the asset path (works for both project assets and scene objects)
+            var assetPath = AssetDatabase.GetAssetPath(selectedObject);
+            
+            // Only process if it's a valid asset path (not scene objects without asset representation)
+            if (string.IsNullOrEmpty(assetPath))
+            {
+                // This is likely a scene object without an asset file
+                // We can still show the GameObject name
+                if (selectedObject is GameObject gameObject)
+                {
+                    SendSelectionUpdate(null, selectedObject.name, "GameObject", null);
+                }
+                else
+                {
+                    SendSelectionUpdate(null, selectedObject.name, selectedObject.GetType().Name, null);
+                }
+                lastSelectedPath = null;
+                lastSelectedGuid = null;
+                return;
+            }
+
+            // Check if this is the same selection as before (avoid spam)
+            var guid = AssetDatabase.AssetPathToGUID(assetPath);
+            if (guid == lastSelectedGuid)
+            {
+                return; // Same selection, don't send duplicate
+            }
+
+            // Determine the asset type
+            var assetType = AssetDatabase.GetMainAssetTypeAtPath(assetPath);
+            var typeName = assetType != null ? assetType.Name : "Unknown";
+            
+            // Check if it's a folder
+            if (AssetDatabase.IsValidFolder(assetPath))
+            {
+                typeName = "Folder";
+            }
+
+            // Send the selection update
+            SendSelectionUpdate(assetPath, selectedObject.name, typeName, guid);
+            
+            // Cache the selection to avoid duplicates
+            lastSelectedPath = assetPath;
+            lastSelectedGuid = guid;
+            
+            Debug.Log($"🎯 [SelectionTracker] Selected: {selectedObject.name} ({typeName}) at {assetPath}");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"❌ [SelectionTracker] OnSelectionChanged failed: {ex.Message}");
+        }
+    }
+
+    private static void SendSelectionUpdate(string path, string name, string type, string guid)
+    {
+        try
+        {
+            _ = MovesiaConnection.Send("selection_changed", new
+            {
+                path = path,
+                name = name,
+                type = type,
+                guid = guid,
+                timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+            });
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"❌ [SelectionTracker] Failed to send selection update: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Force send current selection (useful for when connection is re-established)
+    /// </summary>
+    public static void SendCurrentSelection()
+    {
+        try
+        {
+            OnSelectionChanged();
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"❌ [SelectionTracker] Failed to send current selection: {ex.Message}");
+        }
+    }
+
+    [MenuItem("Movesia/Send Current Selection")]
+    private static void Menu_SendCurrentSelection()
+    {
+        Debug.Log("🎯 [SelectionTracker] Manual selection send triggered");
+        
+        if (!MovesiaConnection.IsConnected)
+        {
+            Debug.LogWarning("🔌 Not connected to Movesia. Please ensure the connection is established first.");
+            return;
+        }
+
+        try
+        {
+            SendCurrentSelection();
+            Debug.Log("✅ [SelectionTracker] Manual selection send completed");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"❌ [SelectionTracker] Manual selection send failed: {ex.Message}");
+        }
+    }
+}
+
 #endif
