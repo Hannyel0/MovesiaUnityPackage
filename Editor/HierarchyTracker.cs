@@ -21,7 +21,7 @@ public static class MovesiaHierarchyTracker
 
     static MovesiaHierarchyTracker()
     {
-        Debug.Log("🏗️ [HierarchyTracker] Initializing...");
+        Debug.Log("🗂️ [HierarchyTracker] Initializing...");
 
         // Subscribe to hierarchy change events
         EditorApplication.hierarchyChanged -= OnHierarchyChanged;
@@ -30,6 +30,13 @@ public static class MovesiaHierarchyTracker
         // Subscribe to more granular object change events for better delta tracking
         ObjectChangeEvents.changesPublished -= OnObjectChangesPublished;
         ObjectChangeEvents.changesPublished += OnObjectChangesPublished;
+
+        // Subscribe to Undo system for Transform changes (most reliable method)
+        Undo.postprocessModifications -= OnPostprocessModifications;
+        Undo.postprocessModifications += OnPostprocessModifications;
+
+        Undo.undoRedoPerformed -= OnUndoRedoPerformed;
+        Undo.undoRedoPerformed += OnUndoRedoPerformed;
 
         // Scene events for full hierarchy capture
         EditorSceneManager.sceneOpened -= OnSceneOpened;
@@ -671,7 +678,6 @@ public static class MovesiaHierarchyTracker
         await MovesiaConnection.Send("hierarchy_gameobject_destroyed", new
         {
             scene_path = scene.path,
-            scene_guid = AssetDatabase.AssetPathToGUID(scene.path),
             instance_id = instanceId
         });
     }
@@ -685,6 +691,75 @@ public static class MovesiaHierarchyTracker
             scene_guid = AssetDatabase.AssetPathToGUID(scene.path),
             gameObject = goData
         });
+    }
+
+    /// <summary>
+    /// Called after any property modification via Inspector or Scene view.
+    /// This is the most reliable way to catch Transform changes.
+    /// </summary>
+    private static UndoPropertyModification[] OnPostprocessModifications(UndoPropertyModification[] modifications)
+    {
+        if (!MovesiaConnection.IsConnected) return modifications;
+
+        try
+        {
+            // Group modifications by GameObject to avoid sending duplicate updates
+            var affectedGameObjects = new HashSet<GameObject>();
+
+            foreach (var mod in modifications)
+            {
+                // Check if this is a Transform modification
+                if (mod.currentValue?.target is Transform transform)
+                {
+                    affectedGameObjects.Add(transform.gameObject);
+                }
+                // Also check for other component modifications
+                else if (mod.currentValue?.target is Component component)
+                {
+                    affectedGameObjects.Add(component.gameObject);
+                }
+            }
+
+            // Send updates for all affected GameObjects
+            foreach (var go in affectedGameObjects)
+            {
+                if (go != null)
+                {
+                    _ = SendGameObjectPropertiesChanged(go, go.scene);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"❌ [HierarchyTracker] OnPostprocessModifications failed: {ex.Message}");
+        }
+
+        return modifications;
+    }
+
+    /// <summary>
+    /// Called when undo/redo is performed. Resend affected objects.
+    /// </summary>
+    private static void OnUndoRedoPerformed()
+    {
+        if (!MovesiaConnection.IsConnected) return;
+
+        try
+        {
+            // After undo/redo, send a delta update for all loaded scenes
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+            {
+                var scene = SceneManager.GetSceneAt(i);
+                if (scene.isLoaded)
+                {
+                    _ = DetectAndSendHierarchyChanges(scene);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"❌ [HierarchyTracker] OnUndoRedoPerformed failed: {ex.Message}");
+        }
     }
 
     [MenuItem("Movesia/Send Full Hierarchy")]
