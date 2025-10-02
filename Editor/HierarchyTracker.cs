@@ -45,53 +45,52 @@ public static class MovesiaHierarchyTracker
         EditorSceneManager.sceneSaved -= OnSceneSaved;
         EditorSceneManager.sceneSaved += OnSceneSaved;
 
-        // FIX: Subscribe to connection ready event with better error handling
+        // Subscribe to connection ready event
         try
         {
             MovesiaConnection.OnConnectionReady -= OnConnectionReady;
             MovesiaConnection.OnConnectionReady += OnConnectionReady;
-            Debug.Log("🏗️ [HierarchyTracker] Subscribed to connection ready event");
+            Debug.Log("✅ [HierarchyTracker] Subscribed to OnConnectionReady event");
         }
         catch (Exception ex)
         {
             Debug.LogError($"❌ [HierarchyTracker] Failed to subscribe to connection events: {ex.Message}");
         }
 
-        // FIX: If connection is already ready when this loads, send immediately
-        if (MovesiaConnection.IsConnected)
+        // Check if already connected
+        Debug.Log($"🔍 [HierarchyTracker] Checking initial connection state: IsConnected={MovesiaConnection.IsConnected}, ShouldSend={MovesiaConnection.ShouldSendHierarchyOnConnect}");
+        
+        if (MovesiaConnection.IsConnected && MovesiaConnection.ShouldSendHierarchyOnConnect)
         {
-            Debug.Log("🏗️ [HierarchyTracker] Connection already ready, sending hierarchy immediately");
-            EditorApplication.delayCall += () => {
-                try {
-                    SendInitialHierarchy();
-                } catch (Exception ex) {
-                    Debug.LogError($"❌ [HierarchyTracker] Failed to send initial hierarchy on startup: {ex.Message}");
-                }
-            };
+            Debug.Log("🗂️ [HierarchyTracker] Connection already ready, sending hierarchy immediately");
+            SendInitialHierarchy();
+        }
+        else
+        {
+            Debug.Log("⏳ [HierarchyTracker] Waiting for connection to be established...");
         }
 
-        Debug.Log("🏗️ [HierarchyTracker] Initialized successfully");
+        Debug.Log("✅ [HierarchyTracker] Initialized successfully");
     }
 
-    // FIX: Direct hierarchy sending without complex timing
     private static void OnConnectionReady()
     {
-        Debug.Log("🚀 [HierarchyTracker] Connection ready notification received");
+        Debug.Log("🚀 [HierarchyTracker] OnConnectionReady called!");
         
-        // Always reset the flag on a **new** connection so a full snapshot is resent.
+        // Check if hierarchy sending is enabled
+        if (!MovesiaConnection.ShouldSendHierarchyOnConnect)
+        {
+            Debug.Log("⏭️ [HierarchyTracker] Hierarchy sending on connect is disabled, skipping");
+            return;
+        }
+        
+        Debug.Log("📋 [HierarchyTracker] Resetting initialHierarchySent flag");
         initialHierarchySent = false;
-        EditorApplication.delayCall += () => {
-            try
-            {
-                Debug.Log("🏗️ [HierarchyTracker] Starting immediate hierarchy send after reconnect.");
-                SendInitialHierarchy();
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"❌ [HierarchyTracker] Failed to send hierarchy in OnConnectionReady: {ex.Message}");
-            }
-        };
+        
+        Debug.Log("📤 [HierarchyTracker] Calling SendInitialHierarchy...");
+        SendInitialHierarchy();
     }
+
 
     /// <summary>
     /// Force a complete hierarchy resend (callable from Electron via WS message).
@@ -107,12 +106,12 @@ public static class MovesiaHierarchyTracker
         SendInitialHierarchy();
     }
 
-    // FIX: Direct hierarchy sending method
+    // FIX: Optimized hierarchy sending - but keep it on main thread
     private static void SendInitialHierarchy()
     {
         if (initialHierarchySent)
         {
-            Debug.Log("🏗️ [HierarchyTracker] Initial hierarchy already sent, skipping");
+            Debug.Log("🗂️ [HierarchyTracker] Initial hierarchy already sent, skipping");
             return;
         }
 
@@ -124,16 +123,13 @@ public static class MovesiaHierarchyTracker
 
         try
         {
-            Debug.Log("🏗️ [HierarchyTracker] Starting hierarchy capture...");
+            Debug.Log("🗂️ [HierarchyTracker] Starting hierarchy capture...");
             
             var loadedScenes = new List<Scene>();
             
-            // Get all loaded scenes
-            Debug.Log($"🏗️ [HierarchyTracker] Getting loaded scenes (total scene count: {SceneManager.sceneCount})...");
             for (int i = 0; i < SceneManager.sceneCount; i++)
             {
                 var scene = SceneManager.GetSceneAt(i);
-                Debug.Log($"🏗️ [HierarchyTracker] Scene {i}: {scene.name} (loaded: {scene.isLoaded}, path: {scene.path})");
                 if (scene.isLoaded)
                 {
                     loadedScenes.Add(scene);
@@ -146,16 +142,14 @@ public static class MovesiaHierarchyTracker
                 return;
             }
 
-            Debug.Log($"📤 [HierarchyTracker] Found {loadedScenes.Count} loaded scenes, capturing hierarchy...");
+            Debug.Log($"📤 [HierarchyTracker] Found {loadedScenes.Count} loaded scenes");
 
-            // Send each scene's hierarchy
+            // Send each scene synchronously (Unity APIs require main thread)
             foreach (var scene in loadedScenes)
             {
-                Debug.Log($"📤 [HierarchyTracker] Capturing hierarchy for scene: {scene.name}");
                 try 
                 {
                     CaptureFullSceneHierarchySync(scene);
-                    Debug.Log($"✅ [HierarchyTracker] Successfully captured hierarchy for scene: {scene.name}");
                 }
                 catch (Exception sceneEx)
                 {
@@ -169,26 +163,18 @@ public static class MovesiaHierarchyTracker
         catch (Exception ex)
         {
             Debug.LogError($"❌ [HierarchyTracker] SendInitialHierarchy failed: {ex.Message}");
-            Debug.LogError($"❌ [HierarchyTracker] Stack trace: {ex.StackTrace}");
             initialHierarchySent = false;
         }
     }
 
-    // FIX: Synchronous version to avoid async issues
+    // Sync version for sending (fire and forget the async Send)
     private static void CaptureFullSceneHierarchySync(Scene scene)
     {
         try
         {
-            Debug.Log($"🏗️ [HierarchyTracker] Creating hierarchy snapshot for scene: {scene.name}");
-            
             var snapshot = CreateHierarchySnapshot(scene);
             sceneSnapshots[scene.path] = snapshot;
-            
-            Debug.Log($"🏗️ [HierarchyTracker] Created snapshot with {snapshot.GameObjects.Count} GameObjects");
 
-            Debug.Log($"🏗️ [HierarchyTracker] Sending hierarchy_full message for scene: {scene.name}");
-            
-            // Use fire-and-forget Send
             _ = MovesiaConnection.Send("hierarchy_full", new
             {
                 scene_path = scene.path,
@@ -278,7 +264,7 @@ public static class MovesiaHierarchyTracker
     {
         if (MovesiaConnection.IsConnected)
         {
-            _ = CaptureFullSceneHierarchy(scene);
+            CaptureFullSceneHierarchySync(scene);
         }
     }
 
@@ -286,7 +272,7 @@ public static class MovesiaHierarchyTracker
     {
         if (MovesiaConnection.IsConnected)
         {
-            _ = CaptureFullSceneHierarchy(scene);
+            CaptureFullSceneHierarchySync(scene);
         }
     }
 
@@ -303,34 +289,6 @@ public static class MovesiaHierarchyTracker
             {
                 _ = DetectAndSendHierarchyChanges(scene);
             }
-        }
-    }
-
-    private static async Task CaptureFullSceneHierarchy(Scene scene)
-    {
-        try
-        {
-            if (!MovesiaConnection.IsConnected)
-            {
-                Debug.LogWarning($"🔌 [HierarchyTracker] Connection not ready, skipping hierarchy capture for {scene.name}");
-                return;
-            }
-
-            var snapshot = CreateHierarchySnapshot(scene);
-            sceneSnapshots[scene.path] = snapshot;
-
-            await MovesiaConnection.Send("hierarchy_full", new
-            {
-                scene_path = scene.path,
-                scene_guid = AssetDatabase.AssetPathToGUID(scene.path),
-                hierarchy = snapshot
-            });
-
-            Debug.Log($"📤 [HierarchyTracker] Sent full hierarchy for scene: {scene.name} ({snapshot.GameObjects.Count} GameObjects)");
-        }
-        catch (Exception ex)
-        {
-            Debug.LogError($"❌ [HierarchyTracker] Failed to capture scene hierarchy for {scene.name}: {ex.Message}");
         }
     }
 

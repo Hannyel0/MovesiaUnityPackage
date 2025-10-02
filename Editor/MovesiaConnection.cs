@@ -29,7 +29,11 @@ public static class MovesiaConnection
 
     // FIX: Connection state tracking for hierarchy sending
     private static bool isConnectionReady = false;
-    private static bool manifestSent = false;
+
+    // ✅ REMOVED: manifestSent - not needed anymore
+
+    // Configuration flags for initial data sending
+    private const bool SEND_HIERARCHY_ON_CONNECT = true;
 
     // Persist a session id across domain reloads (per Editor)
     private const string SessionKey = "Movesia.SessionId";
@@ -54,6 +58,9 @@ public static class MovesiaConnection
 
     // FIX: Event for other classes to know when connection is fully ready
     public static event Action OnConnectionReady;
+
+    // Public property to check if hierarchy should be sent on connect
+    public static bool ShouldSendHierarchyOnConnect => SEND_HIERARCHY_ON_CONNECT;
 
     // Auto-wire on domain load
     static MovesiaConnection()
@@ -84,26 +91,54 @@ public static class MovesiaConnection
         var mySeq = ++ConnSeq;         // monotonic connection sequence
         CurrentSeq = mySeq;
 
-        // FIX: Reset connection ready state
         isConnectionReady = false;
-        manifestSent = false;
 
         ws = new WebSocket(WsUrl(mySeq));
 
         ws.OnOpen += async () =>
         {
-            Debug.Log($"✅ Movesia WS connected [{SessionId}] conn={mySeq}");
-            isConnecting = false;
-            reconnecting = false;
-            nextHbAt = DateTime.UtcNow + TimeSpan.FromSeconds(5 + rng.Next(0, 5));
-            MovesiaEditorState.instance.SetState(MovesiaConnState.Connected);
-            
-            // Send robust Unity handshake BEFORE any other events
-            await SendRobustHandshake();
-
-            // FIX: Use EditorApplication.delayCall to run connection ready workflow on main thread
-            Debug.Log("🔄 Scheduling connection ready workflow...");
-            EditorApplication.delayCall += OnConnectionReadyWorkflow;
+            try
+            {
+                Debug.Log($"✅ Movesia WS connected [{SessionId}] conn={mySeq}");
+                isConnecting = false;
+                reconnecting = false;
+                nextHbAt = DateTime.UtcNow + TimeSpan.FromSeconds(5 + rng.Next(0, 5));
+                
+                if (MovesiaEditorState.instance != null)
+                    MovesiaEditorState.instance.SetState(MovesiaConnState.Connected);
+                
+                // Send handshake immediately
+                await SendRobustHandshake();
+                
+                // Set connection ready
+                isConnectionReady = true;
+                Debug.Log("🔌 Connection ready flag set to true");
+                
+                // Notify listeners
+                try
+                {
+                    if (OnConnectionReady != null)
+                    {
+                        Debug.Log($"🔔 Invoking OnConnectionReady event (subscriber count: {OnConnectionReady.GetInvocationList().Length})");
+                        OnConnectionReady.Invoke();
+                        Debug.Log("✅ Successfully invoked OnConnectionReady event");
+                    }
+                    else
+                    {
+                        Debug.LogWarning("⚠️ OnConnectionReady event has no subscribers!");
+                    }
+                }
+                catch (Exception eventEx)
+                {
+                    Debug.LogError($"❌ Failed to notify listeners: {eventEx.Message}");
+                    Debug.LogError($"❌ Stack trace: {eventEx.StackTrace}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"❌ Error in OnOpen handler: {ex.Message}");
+                isConnectionReady = false;
+            }
         };
 
         ws.OnMessage += bytes =>
@@ -114,82 +149,57 @@ public static class MovesiaConnection
 
         ws.OnError += async (err) =>
         {
-            Debug.LogWarning($"WS error [{mySeq}]: {err}");
-            isConnectionReady = false; // FIX: Reset ready state on error
-            manifestSent = false;
-            if (mySeq != CurrentSeq) return; // only latest may reconnect
-            MovesiaEditorState.instance.SetState(MovesiaConnState.Connecting);
-            await ReconnectSoon();
+            try
+            {
+                Debug.LogWarning($"WS error [{mySeq}]: {err}");
+                isConnectionReady = false;
+                if (mySeq != CurrentSeq) return;
+                
+                if (MovesiaEditorState.instance != null)
+                    MovesiaEditorState.instance.SetState(MovesiaConnState.Connecting);
+                    
+                await ReconnectSoon();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"❌ Error in OnError handler: {ex.Message}");
+            }
         };
 
         ws.OnClose += async (code) =>
         {
-            Debug.LogWarning($"WS closed [{mySeq}]: {code}");
-            isConnectionReady = false; // FIX: Reset ready state on close
-            manifestSent = false;
-            if (mySeq != CurrentSeq) return; // stale socket
-
-            int numeric = (int)code; // enum → int
-            if (numeric == 4001)
-            {
-                Debug.Log($"Connection [{mySeq}] superseded - not reconnecting");
-                MovesiaEditorState.instance.SetState(MovesiaConnState.Disconnected);
-                return;
-            }
-
-            MovesiaEditorState.instance.SetState(MovesiaConnState.Connecting);
-            await ReconnectSoon();
-        };
-    }
-
-    // FIX: Connection ready workflow with enhanced debugging
-    private static void OnConnectionReadyWorkflow()
-    {
-        Debug.Log("🚀 OnConnectionReadyWorkflow called");
-        
-        if (ws == null || ws.State != WebSocketState.Open)
-        {
-            Debug.LogWarning("❌ OnConnectionReadyWorkflow: WebSocket not ready");
-            return;
-        }
-
-        try
-        {
-            Debug.Log("🚀 Starting connection ready workflow...");
-
-            // Step 2: Mark connection as ready
-            Debug.Log("📌 Marking connection as ready");
-            isConnectionReady = true;
-            
-            // Step 3: Notify HierarchyTracker and other listeners
-            Debug.Log("📌 Notifying connection ready listeners...");
             try
             {
-                OnConnectionReady?.Invoke();
-                Debug.Log("✅ Successfully notified connection ready listeners");
+                Debug.LogWarning($"WS closed [{mySeq}]: {code}");
+                isConnectionReady = false;
+                if (mySeq != CurrentSeq) return;
+
+                int numeric = (int)code; // enum → int
+                if (numeric == 4001)
+                {
+                    Debug.Log($"Connection [{mySeq}] superseded - not reconnecting");
+                    if (MovesiaEditorState.instance != null)
+                        MovesiaEditorState.instance.SetState(MovesiaConnState.Disconnected);
+                    return;
+                }
+
+                if (MovesiaEditorState.instance != null)
+                    MovesiaEditorState.instance.SetState(MovesiaConnState.Connecting);
+                    
+                await ReconnectSoon();
             }
-            catch (Exception eventEx)
+            catch (Exception ex)
             {
-                Debug.LogError($"❌ Failed to notify listeners: {eventEx.Message}");
+                Debug.LogError($"❌ Error in OnClose handler: {ex.Message}");
             }
-            
-            Debug.Log("🎉 Connection fully ready, waiting for manifest request from Electron");
-        }
-        catch (Exception ex)
-        {
-            Debug.LogError($"❌ Connection ready workflow failed: {ex.Message}");
-            Debug.LogError($"❌ Workflow stack trace: {ex.StackTrace}");
-            isConnectionReady = false;
-            manifestSent = false;
-        }
+        };
     }
 
     private static async Task ReconnectSoon()
     {
         if (reconnecting) return;
         reconnecting = true;
-        isConnectionReady = false; // FIX: Reset ready state on reconnection
-        manifestSent = false;
+        isConnectionReady = false;
         await CloseSocket("reconnect");
         CreateWebSocket();
         await ConnectWithRetry();
@@ -199,8 +209,7 @@ public static class MovesiaConnection
     {
         try
         {
-            isConnectionReady = false; // FIX: Reset ready state
-            manifestSent = false;
+            isConnectionReady = false;
             cts?.Cancel();
             if (ws != null && (ws.State == WebSocketState.Open || ws.State == WebSocketState.Connecting))
                 await ws.Close();
@@ -215,7 +224,10 @@ public static class MovesiaConnection
             isConnecting = false;
 
             if (reason == "domain-reload" || reason == "editor-quitting")
-                MovesiaEditorState.instance.SetState(MovesiaConnState.Disconnected);
+            {
+                if (MovesiaEditorState.instance != null)
+                    MovesiaEditorState.instance.SetState(MovesiaConnState.Disconnected);
+            }
         }
     }
 
@@ -223,12 +235,14 @@ public static class MovesiaConnection
     {
         if (ws == null || isConnecting) return;
         isConnecting = true;
-        MovesiaEditorState.instance.SetState(MovesiaConnState.Connecting);
+        
+        if (MovesiaEditorState.instance != null)
+            MovesiaEditorState.instance.SetState(MovesiaConnState.Connecting);
 
         try
         {
             int attempt = 0;
-            const int maxDelay = 30_000;
+            const int maxDelay = 5_000; // ✅ Reduced from 30s to 5s max
 
             while (!cts.IsCancellationRequested && ws != null && ws.State != WebSocketState.Open)
             {
@@ -238,7 +252,8 @@ public static class MovesiaConnection
                     await ws.Connect();
                     if (ws.State == WebSocketState.Open)
                     {
-                        isConnecting = false; reconnecting = false;
+                        isConnecting = false; 
+                        reconnecting = false;
                         return;
                     }
                 }
@@ -248,10 +263,21 @@ public static class MovesiaConnection
                 }
 
                 attempt++;
-                int backoff = Math.Min(1000 * (1 << Math.Min(attempt, 5)), maxDelay);
-                int jitter = rng.Next(250, 1000);
-                try { await Task.Delay(backoff + jitter, cts.Token); }
-                catch (TaskCanceledException) { break; }
+                // ✅ More aggressive initial retry (faster connection on first attempts)
+                int backoff = attempt == 1 ? 100 :  // First retry after 100ms
+                             attempt == 2 ? 500 :  // Second retry after 500ms
+                             Math.Min(1000 * (1 << Math.Min(attempt - 2, 3)), maxDelay); // Then exponential
+                
+                int jitter = rng.Next(50, 200); // ✅ Reduced jitter
+                
+                try 
+                { 
+                    await Task.Delay(backoff + jitter, cts.Token); 
+                }
+                catch (TaskCanceledException) 
+                { 
+                    break; 
+                }
             }
         }
         finally
@@ -335,7 +361,7 @@ public static class MovesiaConnection
                 string json = JsonConvert.SerializeObject(hello);
                 await ws.SendText(json);
                 
-                Debug.Log($"🤝 Sent robust handshake [{SessionId}] productGUID={PlayerSettings.productGUID.ToString("N")[..8]}...");
+                Debug.Log($"🤝 Sent robust handshake [{SessionId}] productGUID={PlayerSettings.productGUID.ToString("N").Substring(0, 8)}...");
             }
         }
         catch (Exception ex)
@@ -344,14 +370,14 @@ public static class MovesiaConnection
         }
     }
 
-    public static async void ReconnectNow() => await ReconnectSoon();
+    public static async Task ReconnectNow() => await ReconnectSoon();
 
-    public static async void DisconnectNow()
+    public static async Task DisconnectNow()
     {
-        isConnectionReady = false; // FIX: Reset ready state
-        manifestSent = false;
+        isConnectionReady = false;
         await CloseSocket("user-disconnect");
-        MovesiaEditorState.instance.SetState(MovesiaConnState.Disconnected);
+        if (MovesiaEditorState.instance != null)
+            MovesiaEditorState.instance.SetState(MovesiaConnState.Disconnected);
     }
 
     // --- Receive (server→client) ---
@@ -366,11 +392,6 @@ public static class MovesiaConnection
             if (type == "request_manifest" || type == "manifest:request" || type == "resync")
             {
                 Debug.Log("📨 Received manifest request from Electron");
-                
-                // ✅ FIX: Reset manifestSent flag to allow sending manifest again
-                manifestSent = false;
-                
-                // Send manifest synchronously
                 SendManifestSync();
                 return;
             }
@@ -378,7 +399,11 @@ public static class MovesiaConnection
             if (type == "hierarchy:request_full")
             {
                 Debug.Log("📨 Electron→Unity requested full hierarchy");
-                try { MovesiaHierarchyTracker.ForceResendFullHierarchy(); }
+                try 
+                { 
+                    // ✅ FIX: Removed .instance - call static method directly
+                    MovesiaHierarchyTracker.ForceResendFullHierarchy(); 
+                }
                 catch (Exception ex) { Debug.LogError($"❌ Failed to resend hierarchy: {ex.Message}"); }
                 return;
             }
@@ -393,73 +418,27 @@ public static class MovesiaConnection
     [MenuItem("Movesia/Send Full Manifest")]
     private static void Menu_SendFullManifest() => SendManifestSync();
 
-    /// <summary>
-    /// FIX: Synchronous version with enhanced debugging to avoid threading issues with Unity APIs
-    /// Build & send the full project manifest in batches.
-    /// </summary>
-    private static void SendManifestSync(int batchSize = 100) // Reduced batch size for debugging
+    private static void SendManifestSync(int batchSize = 100)
     {
         Debug.Log("📦 SendManifestSync starting...");
         
         try
         {
-            if (ws == null)
+            if (ws == null || ws.State != WebSocketState.Open)
             {
-                Debug.LogError("❌ SendManifestSync: WebSocket is null");
-                return;
-            }
-            
-            if (ws.State != WebSocketState.Open)
-            {
-                Debug.LogError($"❌ SendManifestSync: WebSocket state is {ws.State}");
+                Debug.LogError("❌ SendManifestSync: WebSocket not ready");
                 return;
             }
 
-            Debug.Log("📦 Getting all asset paths...");
-            
-            // FIX: Add try-catch around each Unity API call
-            string[] all;
-            try
-            {
-                all = AssetDatabase.GetAllAssetPaths();
-                Debug.Log($"📦 Found {all.Length} total asset paths");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"❌ AssetDatabase.GetAllAssetPaths failed: {ex.Message}");
-                throw;
-            }
+            string[] all = AssetDatabase.GetAllAssetPaths()
+                .Where(p => p.StartsWith("Assets/"))
+                .ToArray();
 
-            // Filter to Assets/ folder
-            try
-            {
-                all = all.Where(p => p.StartsWith("Assets/")).ToArray();
-                Debug.Log($"📦 Filtered to {all.Length} asset paths in Assets/");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"❌ Filtering asset paths failed: {ex.Message}");
-                throw;
-            }
-
-            // Tell Electron we're starting
-            Debug.Log("📦 Sending manifest_begin...");
-            try
-            {
-                _ = Send("manifest_begin", new { total = all.Length });
-                Debug.Log($"📦 Sent manifest_begin with total={all.Length}");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"❌ Sending manifest_begin failed: {ex.Message}");
-                throw;
-            }
+            _ = Send("manifest_begin", new { total = all.Length });
 
             int total = all.Length;
             int index = 0;
             var batch = new List<object>(Math.Min(batchSize, total));
-
-            Debug.Log($"📦 Starting to process {total} assets in batches of {batchSize}...");
 
             foreach (var path in all)
             {
@@ -468,7 +447,6 @@ public static class MovesiaConnection
                     var isFolder = AssetDatabase.IsValidFolder(path);
                     var guid = AssetDatabase.AssetPathToGUID(path);
                     
-                    // Null/empty GUIDs can occur for some transient or deleted items within the same Editor session.
                     if (string.IsNullOrEmpty(guid))
                     {
                         index++;
@@ -478,23 +456,19 @@ public static class MovesiaConnection
                     string abs = Path.GetFullPath(Path.Combine(ProjectRoot, path.Replace('/', Path.DirectorySeparatorChar)));
                     FileInfo fi = (!isFolder && File.Exists(abs)) ? new FileInfo(abs) : null;
 
-                    // Kind: main asset type name (MonoScript, TextAsset, Scene, etc.)
                     var t = AssetDatabase.GetMainAssetTypeAtPath(path);
                     string kind = t != null ? t.Name : (isFolder ? "Folder" : "Unknown");
 
-                    // Unity's dependency hash flips when the source, .meta, import settings, or dependencies change.
-                    // (More robust than just file-bytes.) 
                     string depHash = null;
-                    try { depHash = AssetDatabase.GetAssetDependencyHash(path).ToString(); } catch { /* some asset types may throw */ }
+                    try { depHash = AssetDatabase.GetAssetDependencyHash(path).ToString(); } catch { }
 
-                    // Compute dependency GUIDs: get deps, filter self, convert paths to GUIDs, dedupe
                     var depGuids = AssetDatabase
-                        .GetDependencies(new[] { path }, true)               // returns dependency *paths*
-                        .Where(p => p != path)                                // drop self; recursive=true includes self
-                        .Select(p => AssetDatabase.AssetPathToGUID(p))        // convert to GUID
+                        .GetDependencies(new[] { path }, true)
+                        .Where(p => p != path)
+                        .Select(p => AssetDatabase.AssetPathToGUID(p))
                         .Where(g => !string.IsNullOrEmpty(g))
                         .Distinct()
-                        .Take(50) // Limit dependencies to avoid huge payloads
+                        .Take(50)
                         .ToArray();
 
                     batch.Add(new
@@ -505,7 +479,7 @@ public static class MovesiaConnection
                         isFolder,
                         mtime = fi != null ? new DateTimeOffset(fi.LastWriteTimeUtc).ToUnixTimeSeconds() : (long?)null,
                         size  = fi != null ? fi.Length : (long?)null,
-                        hash  = depHash, // preferred signal of "meaningful change"
+                        hash  = depHash,
                         deps  = depGuids 
                     });
 
@@ -513,44 +487,29 @@ public static class MovesiaConnection
 
                     if (batch.Count >= batchSize)
                     {
-                        Debug.Log($"📦 Sending batch {index}/{total}...");
-                        
-                        // FIX: Use fire-and-forget Send (which is async) but don't await it
                         _ = Send("manifest_batch", new { index = index, total = total, items = batch.ToArray() });
                         batch.Clear();
-                        
-                        // FIX: Simple yield instead of QueuePlayerLoopUpdate
-                        if (index % (batchSize * 5) == 0) // Every 5 batches, yield briefly
-                        {
-                            Debug.Log($"📦 Yielding at {index}/{total}...");
-                            // Just let other operations run by returning to the call stack briefly
-                        }
                     }
                 }
                 catch (Exception ex)
                 {
                     Debug.LogError($"❌ Error processing asset {path}: {ex.Message}");
                     index++;
-                    continue; // Skip this asset and continue
+                    continue;
                 }
             }
 
             if (batch.Count > 0)
             {
-                Debug.Log($"📦 Sending final batch {index}/{total}...");
                 _ = Send("manifest_batch", new { index = index, total = total, items = batch.ToArray() });
-                batch.Clear();
             }
 
-            Debug.Log("📦 Sending manifest_end...");
             _ = Send("manifest_end", new { total = total });
             Debug.Log($"📦 Sent manifest ({total} items).");
         }
         catch (Exception ex)
         {
             Debug.LogError($"❌ SendManifestSync failed: {ex.Message}");
-            Debug.LogError($"❌ SendManifestSync stack trace: {ex.StackTrace}");
-            throw; // Re-throw so caller can handle
         }
     }
 
